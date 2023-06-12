@@ -1,0 +1,80 @@
+### Step 1: URL-RUBIGEM software association + content verification
+
+# Creation of a DF retrieving the list of Rubigem software in data_logiciel (579 lines)
+data_RUBYGEM = data_logiciel.loc[data_logiciel["Nom"].str.contains("rubygem-"), :].reset_index().drop(columns=["index","Nombre d'installations"])
+
+# Editor column
+data_RUBYGEM["Éditeur"] = "Rubygem"
+
+# URL_GET_DATA column
+data_RUBYGEM.loc[data_RUBYGEM.index, 'URL_GET_DATA'] = 'https://rubygems.org/api/v1/versions/' + data_RUBYGEM['Nom'].str.replace('rubygem-', '') + '.json'
+
+# We check that the added URL is 
+# For this, we check for each software its content. If the content is "This rubygem could not be found." we add it in another df
+def check_url_content(url):
+    response = requests.get(url)
+    return response.text
+
+# We update the filtered df
+data_RUBYGEM = data_RUBYGEM.loc[data_RUBYGEM["Nom"].str.contains("rubygem-"), :]
+
+# Filter rows whose URL does not work
+url_to_delete = data_RUBYGEM[data_RUBYGEM['URL_GET_DATA'].apply(lambda url: check_url_content(url) == "This rubygem could not be found.")]
+
+# 110 out of 579 URLs are wrong
+# Usually the problem is that the name contains digits. We therefore remove the numbers from these URLs
+data_RUBYGEM.loc[url_to_delete.index, 'URL_GET_DATA'] = 'https://rubygems.org/api/v1/versions/' + url_to_delete['Nom'].str.replace('rubygem-', '').apply(lambda x: re.sub('\d', '', x)) + '.json'
+
+# We update the filtered df
+data_RUBYGEM = data_RUBYGEM.loc[data_RUBYGEM["Nom"].str.contains("rubygem-"), :]
+
+# Filter rows whose URL does not work
+url_to_delete = data_RUBYGEM[data_RUBYGEM['URL_GET_DATA'].apply(lambda url: check_url_content(url) == "This rubygem could not be found.")]
+
+# There are only 32 left, we replace them with np.NaN
+data_RUBYGEM.loc[url_to_delete.index, 'URL_GET_DATA'] = 'lien non trouvé'
+
+
+### Step 2 : Version information from previously added URLs
+
+# Deletion of lines whose URL was not found automatically
+data_RUBYGEM = data_RUBYGEM[~data_RUBYGEM['URL_GET_DATA'].str.contains('lien non trouvé')]
+
+# Function to extract version information from URL_GET_DATA
+def extract_versions_info_rubygem(url):
+    # Fetch content from URL
+    response = requests.get(url)
+    data = response.json()
+    versions = []
+    versions_obsolete = []
+    
+    # Recovery of all versions
+    for version_data in data:
+        version_number = version_data['number']
+        version_date = version_data['built_at']
+        date_obj = parser.isoparse(version_date)
+        version_date = date_obj.strftime("%Y-%m-%d")
+        sha = version_data['sha']  # SHA
+        changelog_uri = version_data['metadata'].get('changelog_uri')
+        
+        # If the version is a prerelease, it is considered obsolete
+        if version_data.get('prerelease'):
+            versions_obsolete.append({'version': version_number, 'date_start': version_date, 'sha': sha, 'changelog_uri': changelog_uri})
+        else:
+            versions.append({'version': version_number, 'date_start': version_date, 'sha': sha, 'changelog_uri': changelog_uri})
+    
+    return json.dumps(versions), json.dumps(versions_obsolete)
+
+# For each software, we add the versions in the df
+results = data_RUBYGEM["URL_GET_DATA"].apply(extract_versions_info_rubygem)
+
+# Addition to df -----> DATABASE
+# We extract the stable and obsolete versions from the results
+version_stable = results.apply(lambda x: json.loads(x[0]))
+version_obsolete = results.apply(lambda x: json.loads(x[1]))
+latest_version = results.apply(lambda x: json.loads(x[0])[0]["version"])
+
+# Ajouter les colonnes "version_stable", "version_obsolete" et "dernière_version" au dataframe
+data_RUBYGEM['Versions'] = version_stable
+data_RUBYGEM['Versions Obsolètes'] = version_obsolete
+data_RUBYGEM['Dernière Version'] = latest_version
